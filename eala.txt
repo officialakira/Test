@@ -1,0 +1,486 @@
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+local lp = Players.LocalPlayer
+
+-- =========================================
+-- [1] VANDER THEME & CORE ENGINE
+-- =========================================
+local COLORS = {
+    MainBG = Color3.fromRGB(11, 10, 20),
+    TabBG = Color3.fromRGB(18, 15, 25),
+    Border = Color3.fromRGB(180, 50, 255),
+    TextActive = Color3.fromRGB(180, 50, 255),
+    TextInactive = Color3.fromRGB(140, 140, 140),
+    RowBG = Color3.fromRGB(22, 18, 30)
+}
+
+local function create(class, props)
+    local obj = Instance.new(class)
+    for k, v in pairs(props) do if k ~= "Parent" then obj[k] = v end end
+    obj.Parent = props.Parent
+    return obj
+end
+
+local SG = create("ScreenGui", {Name = "VanderHub", ResetOnSpawn = false, IgnoreGuiInset = true, Parent = CoreGui})
+
+-- [DRAGGABLE HELPER]
+local function makeDraggable(obj)
+    local d, ds, sp
+    obj.InputBegan:Connect(function(i) 
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then 
+            d = true; ds = i.Position; sp = obj.Position 
+        end 
+    end)
+    obj.InputEnded:Connect(function(i) 
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then d = false end 
+    end)
+    UserInputService.InputChanged:Connect(function(i) 
+        if d and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then 
+            local dl = i.Position - ds
+            obj.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y) 
+        end 
+    end)
+end
+
+-- [CONFIG SYSTEM]
+local SavedConfig = { Toggles = {}, Pinned = {} }
+local function saveToFile()
+    if writefile then
+        pcall(function()
+            SavedConfig.Pinned = {}
+            for name, data in pairs(_G.Pins or {}) do
+                local pos = data.Container.Position
+                SavedConfig.Pinned[name] = {x = pos.X.Scale, xo = pos.X.Offset, y = pos.Y.Scale, yo = pos.Y.Offset}
+            end
+            writefile("VanderConfig.json", HttpService:JSONEncode(SavedConfig))
+        end)
+    end
+end
+local function loadFromFile()
+    if readfile and isfile and isfile("VanderConfig.json") then
+        pcall(function()
+            local decoded = HttpService:JSONDecode(readfile("VanderConfig.json"))
+            if decoded then SavedConfig = decoded end
+        end)
+    end
+end
+loadFromFile()
+
+-- [LACING / PINNING SYSTEM]
+_G.Pins = _G.Pins or {}
+local function createPinnedButton(labelText, callback, initialValue, savedPos, isToggle)
+    if _G.Pins[labelText] then return end
+    local active = initialValue
+    local Container = create("Frame", {
+        Size = UDim2.new(0, 100, 0, 30), Position = savedPos or UDim2.new(0.8, 0, 0.5, 0),
+        BackgroundColor3 = COLORS.MainBG, BackgroundTransparency = 0.3, Parent = SG, ZIndex = 20
+    })
+    create("UICorner", {CornerRadius = UDim.new(0, 6), Parent = Container})
+    local Stroke = create("UIStroke", {Color = (not isToggle or active) and COLORS.Border or COLORS.TextInactive, Thickness = 1.5, Parent = Container})
+    
+    local Label = create("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = labelText, TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 8, Parent = Container})
+    local Btn = create("TextButton", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", Parent = Container, ZIndex = 21})
+
+    -- FIXED DRAGGING & CLICKING FOR PINNED BUTTONS
+    local d, ds, sp, moved = false
+    Btn.InputBegan:Connect(function(i) 
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then 
+            d = true; ds = i.Position; sp = Container.Position; moved = false
+        end 
+    end)
+    UserInputService.InputChanged:Connect(function(i) 
+        if d and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then 
+            local dl = i.Position - ds
+            if dl.Magnitude > 5 then moved = true end
+            Container.Position = UDim2.new(sp.X.Scale, sp.X.Offset + dl.X, sp.Y.Scale, sp.Y.Offset + dl.Y) 
+        end 
+    end)
+    UserInputService.InputEnded:Connect(function(i) 
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then 
+            task.wait() -- Tiny delay to ensure moved flag is processed
+            d = false 
+        end 
+    end)
+
+    Btn.MouseButton1Click:Connect(function()
+        if moved then return end 
+        if isToggle then
+            active = not active
+            TweenService:Create(Stroke, TweenInfo.new(0.2), {Color = active and COLORS.Border or COLORS.TextInactive}):Play()
+            callback(active)
+        else
+            TweenService:Create(Container, TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true), {BackgroundColor3 = COLORS.Border}):Play()
+            callback()
+        end
+    end)
+    
+    _G.Pins[labelText] = {Container = Container, Update = function(v) if isToggle then active = v; Stroke.Color = v and COLORS.Border or COLORS.TextInactive end end}
+end
+
+-- [TRUE FULL SCREEN LOADING]
+local LoadingScreen = create("Frame", {
+    Size = UDim2.new(1, 0, 1, 0), Position = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = COLORS.MainBG, ZIndex = 10000, Parent = SG
+})
+local LTitle = create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 80), Position = UDim2.new(0, 0, 0.45, -40),
+    BackgroundTransparency = 1, Text = "VANDER <font color='#b432ff'>HUB</font>", RichText = true,
+    TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack, TextSize = 42, ZIndex = 10001, Parent = LoadingScreen
+})
+local LStatus = create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 20), Position = UDim2.new(0, 0, 0.45, 40),
+    BackgroundTransparency = 1, Text = "STARTING...", TextColor3 = COLORS.TextInactive,
+    Font = Enum.Font.GothamMedium, TextSize = 12, ZIndex = 10001, Parent = LoadingScreen
+})
+
+-- UI Logic (NEW SQUARE SHAPE)
+local MainFrame = create("Frame", {
+    Size = UDim2.new(0, 310, 0, 320), Position = UDim2.new(0.5, -155, 0.5, -160),
+    BackgroundColor3 = COLORS.MainBG, Visible = false, Parent = SG
+})
+create("UICorner", {CornerRadius = UDim.new(0, 12), Parent = MainFrame})
+create("UIStroke", {Color = COLORS.Border, Thickness = 2, Parent = MainFrame})
+makeDraggable(MainFrame)
+
+-- MOVING DOTS
+local Deco = create("Frame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, ClipsDescendants = true, Parent = MainFrame})
+create("UICorner", {CornerRadius = UDim.new(0, 12), Parent = Deco})
+for i = 1, 15 do
+    local d = create("Frame", {Size = UDim2.new(0, 3, 0, 3), Position = UDim2.new(math.random(), 0, math.random(), 0), BackgroundColor3 = COLORS.Border, BackgroundTransparency = 0.5, Parent = Deco})
+    create("UICorner", {CornerRadius = UDim.new(1, 0), Parent = d})
+    local function move()
+        local t = TweenService:Create(d, TweenInfo.new(math.random(4, 8), Enum.EasingStyle.Sine), {Position = UDim2.new(math.random(), 0, math.random(), 0)})
+        t:Play() t.Completed:Connect(move)
+    end
+    move()
+end
+
+local ToggleIcon = create("TextButton", {
+    Size = UDim2.new(0, 40, 0, 40), Position = UDim2.new(0.05, 0, 0.1, 0),
+    BackgroundColor3 = COLORS.MainBG, Text = "V", TextColor3 = COLORS.Border,
+    Font = "GothamBlack", TextSize = 20, Parent = SG
+})
+create("UICorner", {CornerRadius = UDim.new(0, 8), Parent = ToggleIcon})
+create("UIStroke", {Color = COLORS.Border, Thickness = 1.5, Parent = ToggleIcon})
+makeDraggable(ToggleIcon)
+
+local HeaderContainer = create("Frame", {Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, Parent = MainFrame})
+create("TextLabel", {
+    Text = "VANDER HUB", TextColor3 = COLORS.Border, Font = "GothamBlack", TextSize = 16,
+    Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0.05, 0, 0, 0),
+    BackgroundTransparency = 1, TextXAlignment = "Left", Parent = HeaderContainer
+})
+
+local TabHolder = create("Frame", {
+    Size = UDim2.new(0.9, 0, 0, 32), Position = UDim2.new(0.05, 0, 0.12, 0),
+    BackgroundColor3 = COLORS.TabBG, Parent = MainFrame
+})
+create("UICorner", {CornerRadius = UDim.new(0, 6), Parent = TabHolder})
+local TabListLayout = create("UIListLayout", {FillDirection = "Horizontal", HorizontalAlignment = "Center", Parent = TabHolder})
+
+local PageContainer = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 230), Position = UDim2.new(0, 0, 0.23, 0),
+    BackgroundTransparency = 1, Parent = MainFrame
+})
+
+local Pages = {}
+local TabButtons = {}
+
+local function CreatePage(name)
+    local Page = create("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = false,
+        ScrollBarThickness = 1, ScrollBarImageColor3 = COLORS.Border, AutomaticCanvasSize = "Y", Parent = PageContainer
+    })
+    create("UIListLayout", {HorizontalAlignment = "Center", Padding = UDim.new(0, 8), Parent = Page})
+    Pages[name] = Page
+    local TabBtn = create("TextButton", {Size = UDim2.new(0.25, 0, 1, 0), BackgroundTransparency = 1, Text = name, TextColor3 = COLORS.TextInactive, Font = "GothamBold", TextSize = 9, Parent = TabHolder})
+    TabBtn.MouseButton1Click:Connect(function()
+        for _, p in pairs(Pages) do p.Visible = false end
+        for _, b in pairs(TabButtons) do b.TextColor3 = COLORS.TextInactive end
+        Page.Visible = true; TabBtn.TextColor3 = COLORS.TextActive
+    end)
+    TabButtons[name] = TabBtn
+end
+
+local function AddToggle(pageName, labelText, default, callback)
+    local active = (SavedConfig.Toggles[labelText] ~= nil) and SavedConfig.Toggles[labelText] or default
+    local Row = create("Frame", {Size = UDim2.new(0.92, 0, 0, 42), BackgroundColor3 = COLORS.RowBG, BackgroundTransparency = 0.5, Parent = Pages[pageName]})
+    create("UICorner", {CornerRadius = UDim.new(0, 6), Parent = Row})
+    create("UIStroke", {Color = COLORS.Border, Thickness = 1, Transparency = 0.8, Parent = Row})
+    create("TextLabel", {Text = labelText, Size = UDim2.new(0.6, 0, 1, 0), Position = UDim2.new(0.04, 0, 0, 0), TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 11, BackgroundTransparency = 1, TextXAlignment = "Left", Parent = Row})
+    
+    local TglBg = create("Frame", {Size = UDim2.new(0, 32, 0, 16), Position = UDim2.new(0.94, -32, 0.5, -8), BackgroundColor3 = active and COLORS.Border or Color3.fromRGB(40, 45, 55), Parent = Row})
+    create("UICorner", {CornerRadius = UDim.new(1, 0), Parent = TglBg})
+    local Circle = create("Frame", {Size = UDim2.new(0, 12, 0, 12), Position = active and UDim2.new(0.55, 0, 0.12, 0) or UDim2.new(0.1, 0, 0.12, 0), BackgroundColor3 = Color3.new(1, 1, 1), Parent = TglBg})
+    create("UICorner", {CornerRadius = UDim.new(1, 0), Parent = Circle})
+    
+    local LaceBtn = create("TextButton", {Size = UDim2.new(0, 20, 0, 20), Position = UDim2.new(0.78, 0, 0.5, -10), BackgroundTransparency = 1, Text = "📌", TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 12, Parent = Row, ZIndex = 11})
+    local Btn = create("TextButton", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", Parent = Row, ZIndex = 10})
+    
+    local function update(v)
+        active = v
+        SavedConfig.Toggles[labelText] = v
+        TweenService:Create(TglBg, TweenInfo.new(0.2), {BackgroundColor3 = active and COLORS.Border or Color3.fromRGB(40, 45, 55)}):Play()
+        TweenService:Create(Circle, TweenInfo.new(0.2), {Position = active and UDim2.new(0.55, 0, 0.12, 0) or UDim2.new(0.1, 0, 0.12, 0)}):Play()
+        if _G.Pins[labelText] then _G.Pins[labelText].Update(v) end
+        callback(active)
+    end
+
+    Btn.MouseButton1Click:Connect(function() update(not active) end)
+    LaceBtn.MouseButton1Click:Connect(function() createPinnedButton(labelText, update, active, nil, true) end)
+    
+    if SavedConfig.Pinned[labelText] then
+        local p = SavedConfig.Pinned[labelText]
+        createPinnedButton(labelText, update, active, UDim2.new(p.x, p.xo, p.y, p.yo), true)
+    end
+    if active then task.spawn(function() callback(true) end) end
+end
+
+local function AddButton(pageName, labelText, callback)
+    local Row = create("Frame", {Size = UDim2.new(0.92, 0, 0, 42), BackgroundColor3 = COLORS.RowBG, BackgroundTransparency = 0.5, Parent = Pages[pageName]})
+    create("UICorner", {CornerRadius = UDim.new(0, 6), Parent = Row})
+    create("UIStroke", {Color = COLORS.Border, Thickness = 1, Transparency = 0.8, Parent = Row})
+    create("TextLabel", {Text = labelText, Size = UDim2.new(0.7, 0, 1, 0), Position = UDim2.new(0, 12, 0, 0), TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 11, BackgroundTransparency = 1, TextXAlignment = "Left", Parent = Row})
+    
+    local LaceBtn = create("TextButton", {Size = UDim2.new(0, 20, 0, 20), Position = UDim2.new(0.92, -20, 0.5, -10), BackgroundTransparency = 1, Text = "📌", TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 12, Parent = Row, ZIndex = 11})
+    local Btn = create("TextButton", {Size = UDim2.new(0.8, 0, 1, 0), BackgroundTransparency = 1, Text = "", Parent = Row, ZIndex = 10})
+    
+    Btn.MouseButton1Click:Connect(function()
+        TweenService:Create(Row, TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true), {BackgroundColor3 = COLORS.Border}):Play()
+        callback()
+    end)
+    LaceBtn.MouseButton1Click:Connect(function() createPinnedButton(labelText, callback, nil, nil, false) end)
+    
+    if SavedConfig.Pinned[labelText] then
+        local p = SavedConfig.Pinned[labelText]
+        createPinnedButton(labelText, callback, nil, UDim2.new(p.x, p.xo, p.y, p.yo), false)
+    end
+end
+
+-- =========================================
+-- [MODULES]
+-- =========================================
+
+-- SPEED CUSTOMIZER Logic
+local SpeedMod = { Enabled = false, UI = nil, Speed = 58, Steal = 29, Jump = 80 }
+local function createSpeedUI()
+    local SGui = create("ScreenGui", {Name = "VanderSpeedUI", ResetOnSpawn = false, Parent = CoreGui})
+    local SMain = create("Frame", {
+        Size = UDim2.new(0, 220, 0, 180), Position = UDim2.new(0.5, -110, 0.4, 0),
+        BackgroundColor3 = COLORS.MainBG, BackgroundTransparency = 0.1, Parent = SGui
+    })
+    create("UICorner", {CornerRadius = UDim.new(0, 10), Parent = SMain})
+    create("UIStroke", {Color = COLORS.Border, Thickness = 2, Parent = SMain})
+    makeDraggable(SMain)
+
+    create("TextLabel", {Size = UDim2.new(1, 0, 0, 25), Position = UDim2.new(0, 12, 0, 8), BackgroundTransparency = 1, Text = "Speed Customizer", TextColor3 = COLORS.Border, Font = "GothamBold", TextSize = 12, TextXAlignment = "Left", Parent = SMain})
+    local TglHeader = create("Frame", {Size = UDim2.new(1, -20, 0, 30), Position = UDim2.new(0, 10, 0, 38), BackgroundColor3 = COLORS.Border, Parent = SMain})
+    create("UICorner", {CornerRadius = UDim.new(0, 6), Parent = TglHeader})
+    local TglBtn = create("TextButton", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "ON", TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 14, Parent = TglHeader})
+
+    local function createInput(lbl, val, pos)
+        create("TextLabel", {Size = UDim2.new(0.6, 0, 0, 25), Position = UDim2.new(0, 12, 0, pos), BackgroundTransparency = 1, Text = lbl, TextColor3 = COLORS.TextInactive, Font = "Gotham", TextSize = 12, TextXAlignment = "Left", Parent = SMain})
+        local box = create("TextBox", {Size = UDim2.new(0, 70, 0, 22), Position = UDim2.new(1, -80, 0, pos + 1.5), BackgroundColor3 = COLORS.RowBG, Text = tostring(val), TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 12, Parent = SMain})
+        create("UICorner", {CornerRadius = UDim.new(0, 4), Parent = box})
+        return box
+    end
+    local InSpeed = createInput("Speed", SpeedMod.Speed, 75); local InSteal = createInput("Steal Spd", SpeedMod.Steal, 105); local InJump = createInput("Jump", SpeedMod.Jump, 135)
+    TglBtn.MouseButton1Click:Connect(function() SpeedMod.Enabled = not SpeedMod.Enabled; TglBtn.Text = SpeedMod.Enabled and "ON" or "OFF"; TglHeader.BackgroundColor3 = SpeedMod.Enabled and COLORS.Border or Color3.fromRGB(150, 30, 30) end)
+    local function update(box, key) box.FocusLost:Connect(function() local n = tonumber(box.Text) if n then SpeedMod[key] = n else box.Text = tostring(SpeedMod[key]) end end) end
+    update(InSpeed, "Speed"); update(InSteal, "Steal"); update(InJump, "Jump"); return SGui
+end
+
+-- AUTO GRAB Logic
+local GrabMod = { Enabled = false, Radius = 30, Cache = {} }
+local GrabHUD = create("Frame", {Size = UDim2.new(0, 220, 0, 40), Position = UDim2.new(0.5, -110, 0.9, -15), BackgroundColor3 = Color3.fromRGB(10, 15, 25), Visible = false, Parent = SG})
+create("UICorner", {CornerRadius = UDim.new(0, 10), Parent = GrabHUD})
+create("UIStroke", {Color = Color3.fromRGB(0, 255, 255), Thickness = 2, Parent = GrabHUD})
+local GrabStatus = create("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "SCANNING...", TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 12, Parent = GrabHUD})
+makeDraggable(GrabHUD)
+
+local function scanPlots() 
+    local newCache = {}
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return end
+    for _, plot in pairs(plots:GetChildren()) do 
+        local pods = plot:FindFirstChild("AnimalPodiums")
+        if pods then 
+            for _, pod in pairs(pods:GetChildren()) do if pod:FindFirstChild("Base") then table.insert(newCache, {plot = plot.Name, slot = pod.Name, pos = pod:GetPivot().Position}) end end 
+        end
+    end 
+    GrabMod.Cache = newCache
+end
+local function executeSteal(prompt)
+    task.spawn(function()
+        if fireproximityprompt then pcall(function() fireproximityprompt(prompt) end)
+        else local old = prompt.HoldDuration; prompt.HoldDuration = 0; prompt:InputBegan(Enum.UserInputType.MouseButton1) prompt:InputEnded(Enum.UserInputType.MouseButton1) prompt.HoldDuration = old end
+    end)
+end
+task.spawn(function() while task.wait(3) do if GrabMod.Enabled then scanPlots() end end end)
+
+-- SAFE FOLLOW Logic
+local SafeFollow = { Enabled = false, Locked = false, DISTANCE = 6, targetChar = nil }
+local function getNearPlayer(hrp)
+    local near, d = nil, math.huge
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local dist = (p.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
+            if dist < d then d = dist near = p.Character end
+        end
+    end
+    return near
+end
+
+-- COMBINED SPEED & FOLLOW Logic
+RunService.Heartbeat:Connect(function()
+    if lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") and lp.Character:FindFirstChild("Humanoid") then
+        local hrp, hum = lp.Character.HumanoidRootPart, lp.Character.Humanoid
+        local dir = hum.MoveDirection
+        if SpeedMod.Enabled then
+            if SafeFollow.Enabled and SafeFollow.Locked then
+                if not SafeFollow.targetChar or not SafeFollow.targetChar.Parent then SafeFollow.targetChar = getNearPlayer(hrp) end
+                if SafeFollow.targetChar and SafeFollow.targetChar:FindFirstChild("HumanoidRootPart") then
+                    local tHrp = SafeFollow.targetChar.HumanoidRootPart; local diff = (tHrp.Position - hrp.Position)
+                    if diff.Magnitude > SafeFollow.DISTANCE then dir = (diff * Vector3.new(1,0,1)).Unit else dir = Vector3.new(0,0,0) end
+                end
+            end
+            if dir.Magnitude > 0 then local targetX = hum.WalkSpeed < 25 and SpeedMod.Steal or SpeedMod.Speed; hrp.AssemblyLinearVelocity = Vector3.new(dir.X * targetX, hrp.AssemblyLinearVelocity.Y, dir.Z * targetX) end
+        end
+        if GrabMod.Enabled then
+            local found = false
+            for _, animal in pairs(GrabMod.Cache) do 
+                if (hrp.Position - animal.pos).Magnitude <= GrabMod.Radius then
+                    local p = workspace.Plots:FindFirstChild(animal.plot) and workspace.Plots[animal.plot].AnimalPodiums:FindFirstChild(animal.slot)
+                    local prompt = p and p.Base:FindFirstChild("Spawn") and p.Base.Spawn:FindFirstChild("PromptAttachment") and p.Base.Spawn.PromptAttachment:FindFirstChildOfClass("ProximityPrompt")
+                    if prompt and (prompt.ActionText:lower():find("steal") or prompt.ObjectText:lower():find("steal")) then executeSteal(prompt) found = true; GrabStatus.Text = "🔥 STEALING INSTANTLY! 🔥" GrabStatus.TextColor3 = Color3.fromRGB(255, 50, 70) end
+                end 
+            end
+            if not found then GrabStatus.Text = "SCANNING FOR STEALABLE ANIMALS..." GrabStatus.TextColor3 = Color3.fromRGB(100, 100, 100) end
+        end
+    end
+end)
+
+-- JUMP Logic
+local jumpTick = 0
+UserInputService.JumpRequest:Connect(function()
+    if lp.Character and lp.Character:FindFirstChild("Humanoid") and lp.Character:FindFirstChild("HumanoidRootPart") then
+        local hrp = lp.Character.HumanoidRootPart; local hum = lp.Character.Humanoid
+        if _G.InfJump then if tick() - jumpTick > 0.15 then jumpTick = tick() hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 50, hrp.AssemblyLinearVelocity.Z) end
+        elseif SpeedMod.Enabled and hum.FloorMaterial ~= Enum.Material.Air then hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, SpeedMod.Jump, hrp.AssemblyLinearVelocity.Z) end
+    end
+end)
+
+-- ANTI RAGDOLL Logic
+local AntiRag = { Enabled = false, Speed = 16, char = nil, conn = nil, move = nil }
+local function cleanupRag()
+    if AntiRag.char and AntiRag.char:FindFirstChild("HumanoidRootPart") and AntiRag.char.HumanoidRootPart:FindFirstChild("RagdollAnchor") then AntiRag.char.HumanoidRootPart.RagdollAnchor:Destroy() end
+    if AntiRag.move then AntiRag.move:Disconnect() AntiRag.move = nil end
+end
+local function setupRag(char)
+    AntiRag.char = char; cleanupRag()
+    if AntiRag.conn then AntiRag.conn:Disconnect() end
+    local rag = ReplicatedStorage:WaitForChild("Packages", 5):WaitForChild("Ragdoll", 5):WaitForChild("Ragdoll", 5)
+    if not rag then return end
+    AntiRag.conn = rag.OnClientEvent:Connect(function(a1, a2)
+        if not AntiRag.Enabled then return end
+        local root = char:FindFirstChild("HumanoidRootPart"); local hum = char:FindFirstChild("Humanoid")
+        if a1 == "Make" or a2 == "manualM" then
+            hum:ChangeState(Enum.HumanoidStateType.Freefall); root.CanCollide = false; cleanupRag()
+            local anchor = create("BodyPosition", {Name = "RagdollAnchor", MaxForce = Vector3.new(1e6, 1e6, 1e6), P = 5000, D = 1000, Position = root.Position, Parent = root})
+            AntiRag.move = RunService.RenderStepped:Connect(function() if not AntiRag.Enabled or not anchor or not anchor.Parent then cleanupRag() return end local d = hum.MoveDirection; anchor.Position = root.Position + (d.Magnitude > 0 and d.Unit * AntiRag.Speed or Vector3.new(0,0,0)) end)
+        elseif a1 == "Destroy" or a2 == "manualD" then hum:ChangeState(Enum.HumanoidStateType.GettingUp); root.CanCollide = true; cleanupRag() end
+    end)
+end
+
+-- VISUAL Logic
+local Visuals = { Enabled = false, Nametags = false, Hitboxes = false, Highlights = {}, Tags = {}, Boxes = {} }
+RunService.RenderStepped:Connect(function()
+    if not Visuals.Enabled then return end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local char = p.Character
+            if not Visuals.Highlights[p] then Visuals.Highlights[p] = create("Highlight", {FillColor = COLORS.Border, Parent = CoreGui, Adornee = char}) end
+            if Visuals.Nametags and not Visuals.Tags[p] then
+                local tag = create("BillboardGui", {Name = "VTag", Adornee = char.HumanoidRootPart, AlwaysOnTop = true, Size = UDim2.new(0, 80, 0, 15), StudsOffsetWorldSpace = Vector3.new(0, 3, 0), Parent = CoreGui})
+                create("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = p.DisplayName, TextColor3 = Color3.new(1,1,1), Font = "GothamBold", TextSize = 10, Parent = tag})
+                Visuals.Tags[p] = tag
+            elseif not Visuals.Nametags and Visuals.Tags[p] then Visuals.Tags[p]:Destroy(); Visuals.Tags[p] = nil end
+            if Visuals.Hitboxes and not Visuals.Boxes[p] then Visuals.Boxes[p] = create("SelectionBox", {Adornee = char.HumanoidRootPart, Color3 = COLORS.Border, LineThickness = 0.05, Parent = CoreGui})
+            elseif not Visuals.Hitboxes and Visuals.Boxes[p] then Visuals.Boxes[p]:Destroy(); Visuals.Boxes[p] = nil end
+        end
+    end
+end)
+
+-- [PAGES & TOGGLES]
+for _, t in ipairs({"Combat", "Protect", "Visual", "Settings"}) do CreatePage(t) end
+
+-- COMBAT TAB
+AddToggle("Combat", "Auto Grab Animals", false, function(v) GrabMod.Enabled = v; GrabHUD.Visible = v; if v then scanPlots() end end)
+AddToggle("Combat", "Auto Bat", false, function(v)
+    if v then _G.ABC = RunService.Heartbeat:Connect(function()
+        local b = lp.Backpack:FindFirstChild("Bat") or (lp.Character and lp.Character:FindFirstChild("Bat"))
+        if b and lp.Character and lp.Character:FindFirstChild("Humanoid") then if b.Parent ~= lp.Character then lp.Character.Humanoid:EquipTool(b) end b:Activate() end
+    end) else if _G.ABC then _G.ABC:Disconnect() end end
+end)
+AddToggle("Combat", "Melee Aimbot", false, function(v)
+    if v then
+        local hrp = lp.Character:WaitForChild("HumanoidRootPart"); local att = create("Attachment", {Parent = hrp}); local ao = create("AlignOrientation", {Attachment0 = att, Mode = Enum.OrientationAlignmentMode.OneAttachment, RigidityEnabled = true, Parent = hrp})
+        _G.MA = RunService.RenderStepped:Connect(function()
+            local t, dm = nil, 7.5; for _, p in pairs(Players:GetPlayers()) do if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then local d = (p.Character.HumanoidRootPart.Position - hrp.Position).Magnitude if d < dm then t, dm = p.Character.HumanoidRootPart, d end end end
+            if t then lp.Character.Humanoid.AutoRotate = false; ao.Enabled = true; ao.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(t.Position.X, hrp.Position.Y, t.Position.Z)) else ao.Enabled = false; lp.Character.Humanoid.AutoRotate = true end
+        end)
+    else if _G.MA then _G.MA:Disconnect() end if lp.Character and lp.Character:FindFirstChild("Humanoid") then lp.Character.Humanoid.AutoRotate = true end end
+end)
+AddToggle("Combat", "Lock Target", false, function(v) SafeFollow.Enabled = v; SafeFollow.Locked = v end)
+AddToggle("Combat", "Speed Customizer", false, function(v) if v then if not SpeedMod.UI then SpeedMod.UI = createSpeedUI() end SpeedMod.UI.Enabled = true else if SpeedMod.UI then SpeedMod.UI.Enabled = false end end end)
+AddToggle("Combat", "Inf Jump", false, function(v) _G.InfJump = v end)
+AddButton("Combat", "Sky Drop", function() local char = lp.Character; local hrp = char and char:FindFirstChild("HumanoidRootPart") if hrp then hrp.AssemblyLinearVelocity = Vector3.new(0, 125, 0) task.wait(0.4) hrp.AssemblyLinearVelocity = Vector3.new(0, -600, 0) end end)
+
+-- PROTECT TAB
+AddToggle("Protect", "Anti-Ragdoll", false, function(v) AntiRag.Enabled = v; if v and lp.Character then setupRag(lp.Character) else cleanupRag() end end)
+AddToggle("Protect", "Anti Turret", false, function(v)
+    _G.ATC = v
+    if v then _G.ATCC = RunService.Heartbeat:Connect(function() local hrp = lp.Character:FindFirstChild("HumanoidRootPart") for _, o in pairs(Workspace:GetChildren()) do if o.Name:find("Sentry") and not o.Name:find("Bullet") then local p = o:IsA("BasePart") and o or (o:IsA("Model") and (o.PrimaryPart or o:FindFirstChildWhichIsA("BasePart"))) if p and (hrp.Position - p.Position).Magnitude < 60 then p.CFrame = hrp.CFrame * CFrame.new(0, 0, -5); local b = lp.Backpack:FindFirstChild("Bat") or (lp.Character and lp.Character:FindFirstChild("Bat")) if b then if b.Parent ~= lp.Character then lp.Character.Humanoid:EquipTool(b) end b:Activate() end end end end end)
+    else if _G.ATCC then _G.ATCC:Disconnect() end end
+end)
+AddToggle("Protect", "Anti Bee & Disco", false, function(v)
+    _G.ABE = v
+    if v then _G.ABEC = ReplicatedStorage.DescendantAdded:Connect(function(r) if _G.ABE and r:IsA("RemoteEvent") then for _, k in pairs({"effect", "vfx", "disco", "bee", "camera"}) do if r.Name:lower():find(k) then for _, c in pairs(getconnections(r.OnClientEvent)) do if c.Disable then c:Disable() end end break end end end end)
+    else if _G.ABEC then _G.ABEC:Disconnect() end end
+end)
+AddToggle("Protect", "Optimizer", false, function(v) if v then workspace.Terrain.WaterWaveSize = 0; game:GetService("Lighting").GlobalShadows = false for _, o in pairs(game:GetDescendants()) do if o:IsA("BasePart") then o.Material = Enum.Plastic elseif o:IsA("Decal") then o.Transparency = 1 end end end end)
+
+-- VISUAL TAB
+AddToggle("Visual", "Player ESP", false, function(v) Visuals.Enabled = v; if not v then for _, h in pairs(Visuals.Highlights) do h:Destroy() end Visuals.Highlights = {} end end)
+AddToggle("Visual", "Nametags", false, function(v) Visuals.Nametags = v end)
+AddToggle("Visual", "Hitbox Visuals", false, function(v) Visuals.Hitboxes = v end)
+local Xray = { Org = {}, Conn = nil }
+AddToggle("Visual", "Xray Base", false, function(v)
+    if v then for _, o in pairs(Workspace:GetDescendants()) do if (o:IsA("BasePart") or o:IsA("MeshPart")) and (o.Name:lower():find("base") or (o.Parent and o.Parent.Name:lower():find("base"))) then Xray.Org[o] = o.LocalTransparencyModifier o.LocalTransparencyModifier = 0.8 end end Xray.Conn = Workspace.DescendantAdded:Connect(function(o) task.wait(0.1) if (o:IsA("BasePart") or o:IsA("MeshPart")) and (o.Name:lower():find("base") or (o.Parent and o.Parent.Name:lower():find("base"))) then Xray.Org[o] = o.LocalTransparencyModifier o.LocalTransparencyModifier = 0.8 end end)
+    else if Xray.Conn then Xray.Conn:Disconnect() end for o, val in pairs(Xray.Org) do pcall(function() o.LocalTransparencyModifier = val end) end Xray.Org = {} end
+end)
+AddToggle("Visual", "No Anim", false, function(v) _G.NA = v; if v then if lp.Character and lp.Character:FindFirstChild("Humanoid") then for _, t in pairs(lp.Character.Humanoid:GetPlayingAnimationTracks()) do t:Stop() end _G.NAC = lp.Character.Humanoid.AnimationPlayed:Connect(function(t) if _G.NA then t:Stop() end end) end else if _G.NAC then _G.NAC:Disconnect() end end end)
+
+-- SETTINGS TAB
+AddButton("Settings", "Save Config", function() saveToFile() end)
+AddButton("Settings", "Unpin All Buttons", function() for name, data in pairs(_G.Pins) do data.Container:Destroy() end _G.Pins = {} end)
+
+-- INITIALIZE
+TabButtons["Combat"].TextColor3 = COLORS.TextActive
+Pages["Combat"].Visible = true
+ToggleIcon.MouseButton1Click:Connect(function() MainFrame.Visible = not MainFrame.Visible end)
+UserInputService.InputBegan:Connect(function(k, g) if not g and k.KeyCode == Enum.KeyCode.RightControl then MainFrame.Visible = not MainFrame.Visible end end)
+task.spawn(function()
+    LStatus.Text = "AUTHENTICATING..."; task.wait(0.8)
+    LStatus.Text = "VANDER HUB READY"; task.wait(0.5)
+    TweenService:Create(LoadingScreen, TweenInfo.new(0.5), {BackgroundTransparency = 1, Position = UDim2.new(0, 0, -1, 0)}):Play()
+    task.wait(0.6); LoadingScreen:Destroy(); MainFrame.Visible = true
+end)
+warn("VANDER HUB VERSION 1.1 LOADED")
